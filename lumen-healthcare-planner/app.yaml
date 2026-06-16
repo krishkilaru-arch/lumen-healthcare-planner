@@ -1,0 +1,14 @@
+command:
+  - uvicorn
+  - app:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+
+resources:
+  - name: lakebase-healthcare
+    database_instance:
+      name: hackathon-healthcare
+      permission: READ_WRITE
+

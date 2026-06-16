@@ -1,0 +1,28 @@
+name: Pull Request
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up mise
+        uses: jdx/mise-action@v2
+
+      - name: Install dependencies
+        run: mise run install:node
+
+      - name: Lint and format check
+        run: mise run check
+
+      - name: Type check
+        run: mise run typecheck
+
+      - name: Test
+        run: mise run test

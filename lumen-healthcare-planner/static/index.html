@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumen Healthcare Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { red: '#FF3621', dark: '#0B2026', warm: '#EEEDE9', light: '#F9F7F4' }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-brand-light min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-brand-dark text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 bg-brand-red rounded-md flex items-center justify-center font-bold text-sm">L</div>
+                <h1 class="text-lg font-semibold">Lumen Healthcare Planner</h1>
+            </div>
+            <div class="flex gap-1">
+                <button onclick="showPage('dashboard')" class="nav-btn px-3 py-1.5 rounded text-sm hover:bg-white/10 transition" data-page="dashboard">Dashboard</button>
+                <button onclick="showPage('trust')" class="nav-btn px-3 py-1.5 rounded text-sm hover:bg-white/10 transition" data-page="trust">Trust Desk</button>
+                <button onclick="showPage('deserts')" class="nav-btn px-3 py-1.5 rounded text-sm hover:bg-white/10 transition" data-page="deserts">Desert Planner</button>
+                <button onclick="showPage('referral')" class="nav-btn px-3 py-1.5 rounded text-sm hover:bg-white/10 transition" data-page="referral">Referral Copilot</button>
+                <button onclick="showPage('readiness')" class="nav-btn px-3 py-1.5 rounded text-sm hover:bg-white/10 transition" data-page="readiness">Data Readiness</button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        <!-- Dashboard -->
+        <section id="page-dashboard" class="page">
+            <h2 class="text-2xl font-bold text-brand-dark mb-4">Healthcare Infrastructure Overview</h2>
+            <p class="text-gray-600 mb-6">Real-time insights across India's healthcare network, powered by Databricks Lakebase.</p>
+            <div id="stats-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl p-6 shadow-sm border">
+                    <h3 class="font-semibold text-brand-dark mb-2">Track 1: Facility Trust Desk</h3>
+                    <p class="text-sm text-gray-600">Score trustworthiness via data completeness, source verification, and cross-referencing. Every claim cites evidence.</p>
+                    <button onclick="showPage('trust')" class="mt-3 text-brand-red text-sm font-medium hover:underline">Explore &rarr;</button>
+                </div>
+                <div class="bg-white rounded-xl p-6 shadow-sm border">
+                    <h3 class="font-semibold text-brand-dark mb-2">Track 2: Medical Desert Planner</h3>
+                    <p class="text-sm text-gray-600">Identify underserved regions by cross-referencing facility density with NFHS-5 health outcomes.</p>
+                    <button onclick="showPage('deserts')" class="mt-3 text-brand-red text-sm font-medium hover:underline">Explore &rarr;</button>
+                </div>
+                <div class="bg-white rounded-xl p-6 shadow-sm border">
+                    <h3 class="font-semibold text-brand-dark mb-2">Track 3: Referral Copilot</h3>
+                    <p class="text-sm text-gray-600">Find the right facility for a medical need. Ranked by trust, distance, and capacity with full reasoning.</p>
+                    <button onclick="showPage('referral')" class="mt-3 text-brand-red text-sm font-medium hover:underline">Explore &rarr;</button>
+                </div>
+                <div class="bg-white rounded-xl p-6 shadow-sm border">
+                    <h3 class="font-semibold text-brand-dark mb-2">Track 4: Data Readiness Desk</h3>
+                    <p class="text-sm text-gray-600">Profile dataset quality. Identify gaps, prioritize enrichment, and track improvements over time.</p>
+                    <button onclick="showPage('readiness')" class="mt-3 text-brand-red text-sm font-medium hover:underline">Explore &rarr;</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Trust Desk -->
+        <section id="page-trust" class="page hidden">
+            <h2 class="text-2xl font-bold text-brand-dark mb-4">Facility Trust Desk</h2>
+            <p class="text-sm text-gray-600 mb-3">Can this facility actually do what it claims? Select a <strong>capability</strong> and <strong>region</strong> to evaluate.</p>
+            <div class="bg-white rounded-xl p-4 shadow-sm border mb-4">
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 items-start">
+                    <div id="trust-capability-ms"></div>
+                    <div id="trust-state-ms"></div>
+                    <select id="trust-district" class="border rounded-lg px-3 py-2 text-sm">
+                        <option value="">All districts</option>
+                    </select>
+                    <select id="trust-min" class="border rounded-lg px-3 py-2 text-sm">
+                        <option value="0">All signals</option>
+                        <option value="40">Score &ge; 40</option>
+                        <option value="60">Score &ge; 60</option>
+                    </select>
+                    <button onclick="loadTrust()" class="bg-brand-red text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition">Evaluate</button>
+                </div>
+            </div>
+            <div id="trust-results" class="space-y-3"></div>
+        </section>
+
+        <!-- Medical Desert Planner -->
+        <section id="page-deserts" class="page hidden">
+            <h2 class="text-2xl font-bold text-brand-dark mb-4">Medical Desert Planner</h2>
+            <div class="bg-white rounded-xl p-4 shadow-sm border mb-4">
+                <p class="text-xs text-gray-500 mb-3">Select a capability to find districts where that care is scarce. Districts below the threshold are flagged as deserts.</p>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 items-start">
+                    <div id="desert-capability-ms"></div>
+                    <select id="desert-state" class="border rounded-lg px-3 py-2 text-sm">
+                        <option value="">All states</option>
+                    </select>
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600 whitespace-nowrap">Max facilities:</label>
+                        <input id="desert-threshold" type="number" value="5" min="1" max="20" class="border rounded-lg px-3 py-2 text-sm w-20">
+                    </div>
+                    <button onclick="loadDeserts()" class="bg-brand-red text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition">Find Deserts</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div id="desert-map" class="h-96 rounded-xl border shadow-sm"></div>
+                <div id="desert-list" class="h-96 overflow-y-auto space-y-2"></div>
+            </div>
+        </section>
+
+        <!-- Referral Copilot -->
+        <section id="page-referral" class="page hidden">
+            <h2 class="text-2xl font-bold text-brand-dark mb-4">Referral Copilot</h2>
+            <div class="bg-white rounded-xl p-4 shadow-sm border mb-4">
+                <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-start">
+                    <div id="ref-specialty-ms"></div>
+                    <input id="ref-procedure" list="procedure-list" type="text" placeholder="Procedure (type or pick from list)" class="border rounded-lg px-3 py-2 text-sm" onblur="refreshReferralStates()" onchange="refreshReferralStates()">
+                    <datalist id="procedure-list"></datalist>
+                    <div id="ref-state-ms"></div>
+                    <select id="ref-city" class="border rounded-lg px-3 py-2 text-sm">
+                        <option value="">All cities</option>
+                    </select>
+                    <div class="relative">
+                        <input id="ref-near" type="text" placeholder="Near city → shows km" class="border rounded-lg px-3 py-2 text-sm w-full" onblur="resolveNearCity()">
+                        <span id="ref-near-status" class="absolute right-2 top-2.5 text-xs text-gray-400"></span>
+                    </div>
+                    <button onclick="loadReferral()" class="bg-brand-red text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition">Find Facilities</button>
+                </div>
+            </div>
+            <div id="referral-results" class="space-y-3"></div>
+            <!-- Saved shortlist panel -->
+            <div id="referral-shortlist-panel" class="mt-6 hidden">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-lg font-semibold text-brand-dark">My Shortlist</h3>
+                    <button onclick="toggleShortlist()" class="text-xs text-gray-400 hover:text-brand-red">Hide</button>
+                </div>
+                <div id="referral-shortlist-items" class="space-y-2"></div>
+            </div>
+        </section>
+
+        <!-- Data Readiness -->
+        <section id="page-readiness" class="page hidden">
+            <h2 class="text-2xl font-bold text-brand-dark mb-1">Data Readiness Desk</h2>
+            <p class="text-sm text-gray-500 mb-4">What needs to be fixed before this dataset can be trusted for planning?</p>
+            <!-- Tab bar -->
+            <div class="flex gap-1 border-b mb-4">
+                <button id="tab-overview" onclick="showReadinessTab('overview')"
+                    class="readiness-tab px-4 py-2 text-sm font-medium border-b-2 border-brand-red text-brand-red">Overview</button>
+                <button id="tab-review" onclick="showReadinessTab('review')"
+                    class="readiness-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-brand-dark">Review Queue</button>
+                <button id="tab-states" onclick="showReadinessTab('states')"
+                    class="readiness-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-brand-dark">By State</button>
+            </div>
+            <!-- Overview tab -->
+            <div id="readiness-tab-overview">
+                <div id="readiness-overview" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"></div>
+                <h3 class="text-lg font-semibold text-brand-dark mb-3">Field Coverage Analysis</h3>
+                <div id="readiness-priorities" class="space-y-2"></div>
+            </div>
+            <!-- Review Queue tab -->
+            <div id="readiness-tab-review" class="hidden">
+                <div class="flex items-center justify-between mb-3">
+                    <p class="text-sm text-gray-500">Facilities with suspicious claims, bad coordinates, or contradictory data. Mark each as approved, rejected, or needs review.</p>
+                    <span id="review-badge" class="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded font-medium"></span>
+                </div>
+                <div class="flex gap-2 mb-3">
+                    <button onclick="loadReviewQueue('all')"      id="rfilt-all"         class="review-filter-btn text-xs px-3 py-1 rounded border border-brand-red bg-brand-red text-white">All</button>
+                    <button onclick="loadReviewQueue('pending')"  id="rfilt-pending"     class="review-filter-btn text-xs px-3 py-1 rounded border text-gray-600 hover:bg-gray-50">Pending</button>
+                    <button onclick="loadReviewQueue('approved')" id="rfilt-approved"    class="review-filter-btn text-xs px-3 py-1 rounded border text-gray-600 hover:bg-gray-50">Approved</button>
+                    <button onclick="loadReviewQueue('rejected')" id="rfilt-rejected"    class="review-filter-btn text-xs px-3 py-1 rounded border text-gray-600 hover:bg-gray-50">Rejected</button>
+                </div>
+                <div id="readiness-flags" class="space-y-2"></div>
+            </div>
+            <!-- By State tab -->
+            <div id="readiness-tab-states" class="hidden">
+                <p class="text-sm text-gray-500 mb-3">Completeness scores per state — description, specialties, coordinates, doctors, equipment.</p>
+                <div id="readiness-states" class="overflow-x-auto"></div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="max-w-7xl mx-auto px-4 py-4 text-center text-xs text-gray-400">
+        DAIS 2026 Apps & Agents for Good Hackathon &mdash; Powered by Databricks Lakebase
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+[tools]
+prek = "0.4"
+taplo = "0.10"
+node = "24.16.0"
+
+[settings]
+# This must be enabled to make the hooks/tasks work
+experimental = true
+
+[tasks.install]
+description = "Install dependencies and pre-commit hooks"
+depends = ["install:node", "install:prek"]
+
+[tasks.check]
+description = "Run all validation checks (lint, format)"
+depends = ["lint", "fmt:check"]
+
+[tasks.lint]
+description = "Run all lint tasks"
+depends = ["app:lint", "lint:toml"]
+
+[tasks."fmt:check"]
+description = "Check all formatting"
+depends = ["app:fmt:check"]
+
+[tasks.fmt]
+description = "Run all code formatting tasks"
+depends = ["app:fmt", "fmt:toml"]
+
+[tasks.test]
+description = "Run all tests"
+depends = ["app:test"]
+
+[tasks.typecheck]
+description = "Run all type checks"
+depends = ["app:typecheck"]
+
+#
+# Client (Node)
+#
+[tasks."install:node"]
+run = "npm install"
+sources = ['package.json', 'package-lock.json', 'mise.toml']
+outputs = ['node_modules/.package-lock.json']
+
+[tasks.dev]
+description = "Run the client dev server"
+run = "npm run dev"
+
+[tasks.build]
+description = "Build the app (server + client)"
+run = "npm run build"
+
+[tasks."app:lint"]
+description = "Lint the client (eslint)"
+run = "npm run lint"
+
+[tasks."app:fmt"]
+description = "Format the client (prettier)"
+run = "npm run format:fix"
+
+[tasks."app:fmt:check"]
+description = "Check client formatting (prettier)"
+run = "npm run format"
+
+[tasks."app:typecheck"]
+description = "Type-check the client (tsc)"
+run = "npm run typecheck"
+
+[tasks."app:test"]
+description = "Run client tests (vitest)"
+run = "npm run test"
+
+#
+# TOML
+#
+[tasks."lint:toml"]
+run = "taplo lint"
+
+[tasks."fmt:toml"]
+run = "taplo format"
+
+#
+# MISC
+#
+[tasks."install:prek"]
+run = "prek install"
+
+[env]
+_.file = ".env"

@@ -1,0 +1,18 @@
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "eslint"
+name = "eslint"
+entry = "mise exec -- npx eslint --fix"
+language = "system"
+files = '\.(ts|tsx|js|jsx|cjs|mjs)$'
+require_serial = true
+
+[[repos.hooks]]
+id = "prettier"
+name = "prettier"
+entry = "mise exec -- npx prettier --write --ignore-unknown"
+language = "system"
+files = '\.(ts|tsx|js|jsx|cjs|mjs|json|jsonc|css|scss|md|ya?ml|html)$'
+require_serial = true

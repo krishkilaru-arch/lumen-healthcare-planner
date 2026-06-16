@@ -1,0 +1,50 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Never run two deploys to the shared workspace at once; let the latest win.
+concurrency:
+  group: deploy-shared-workspace
+  cancel-in-progress: false
+
+jobs:
+  # Gate: reuse the existing PR validation (lint/format + typecheck + test).
+  validate:
+    uses: ./.github/workflows/pull-request.yml
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: shared-demo
+    env:
+      DATABRICKS_HOST: https://dbc-5bcc65d8-a106.cloud.databricks.com
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Build in CI (the built artifacts are what get deployed) ---
+      - name: Set up mise
+        uses: jdx/mise-action@v2
+
+      - name: Install dependencies
+        run: mise run install:node
+
+      - name: Build (server + client)
+        run: mise run build # produces dist/ and client/dist/
+
+      # --- Deploy the bundle (uploads the built artifacts) ---
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle
+        run: databricks bundle validate
+
+      - name: Deploy bundle
+        run: databricks bundle deploy
+
+      - name: Start/refresh app
+        run: databricks bundle run app
