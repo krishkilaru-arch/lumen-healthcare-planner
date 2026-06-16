@@ -132,7 +132,7 @@ let trustSelectedCaps  = [];
 let trustCapInitDone   = false;
 
 async function refreshTrustStates() {
-    const cap = trustSelectedCaps.length === 1 ? trustSelectedCaps[0] : '';
+    const cap = trustSelectedCaps.join(',');
     const url  = '/api/filters/states' + (cap ? '?capability=' + encodeURIComponent(cap) : '');
     let states = [];
     try {
@@ -153,7 +153,7 @@ async function refreshTrustDistricts() {
     const distSel = document.getElementById('trust-district');
     if (!distSel) return;
     const states = trustSelectedStates;
-    const cap    = trustSelectedCaps.length === 1 ? trustSelectedCaps[0] : '';
+    const cap    = trustSelectedCaps.join(',');
     if (!states.length) {
         distSel.innerHTML = '<option value="">Select state first</option>';
         return;
@@ -400,217 +400,178 @@ async function saveDesertScenario() {
     } catch(e) { alert('Save failed.'); }
 }
 
+// --- Desert Map (Leaflet) ---
+function initDesertMap(deserts) {
+    const mapEl = document.getElementById('desert-map');
+    if (!mapEl) return;
+    if (desertMap) { desertMap.remove(); desertMap = null; }
+    desertMap = L.map('desert-map').setView([22.5, 80], 4.5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 12,
+        attribution: '&copy; OpenStreetMap'
+    }).addTo(desertMap);
+    const sevColors = { critical: '#dc2626', high: '#ea580c', moderate: '#ca8a04', low: '#16a34a' };
+    deserts.forEach(function(d) {
+        if (!d.avg_lat || !d.avg_lon) return;
+        var color = sevColors[d.severity] || '#6b7280';
+        var radius = d.severity === 'critical' ? 12 : d.severity === 'high' ? 10 : 8;
+        L.circleMarker([d.avg_lat, d.avg_lon], {
+            radius: radius,
+            fillColor: color,
+            color: '#fff',
+            weight: 1,
+            fillOpacity: 0.75
+        }).addTo(desertMap)
+          .bindPopup('<strong>' + (d.district || 'Unknown') + '</strong><br>' +
+                     d.state + '<br>' +
+                     '<span style="color:' + color + ';font-weight:bold">' + d.severity + '</span> — ' +
+                     d.facility_count + ' facilities<br>' +
+                     '<em>' + (d.confidence_note || '') + '</em>');
+    });
+    setTimeout(function() { desertMap.invalidateSize(); }, 200);
+}
+
 async function loadDesertScenarios() {
     const el = document.getElementById('desert-scenarios');
     if (!el) return;
     try {
-        const res  = await fetch('/api/deserts/scenarios');
+        const res = await fetch('/api/deserts/scenarios');
         const data = await res.json();
-        const rows = data.scenarios || [];
-        if (!rows.length) { el.innerHTML = ''; return; }
-        el.innerHTML = '<h4 class="text-sm font-semibold text-brand-dark mb-2 mt-2">Saved Scenarios</h4>' +
-            rows.map(function(s) {
-                var f = {}; try { f = JSON.parse(s.filters_json); } catch(e) {}
-                return '<div class="bg-gray-50 rounded p-2 border text-xs flex justify-between items-center mb-1">' +
-                    '<div><span class="font-medium">' + s.name + '</span>' +
-                    '<span class="text-gray-400 ml-2">' + (f.capability || 'All') + ' \u00b7 ' + (f.state || 'All states') + ' \u00b7 \u2264' + (f.threshold || 5) + ' facilities</span></div>' +
-                    '<span class="text-gray-400">' + new Date(s.created_at).toLocaleDateString() + '</span></div>';
+        const scenarios = data.scenarios || [];
+        if (!scenarios.length) { el.innerHTML = ''; return; }
+        el.innerHTML = '<h4 class="text-sm font-semibold text-brand-dark mb-2">Saved Scenarios</h4>' +
+            scenarios.map(function(s) {
+                return '<div class="text-xs bg-white border rounded p-2 mb-1"><span class="font-medium">' + s.name + '</span> <span class="text-gray-400 ml-2">' + (s.created_at || '').slice(0, 10) + '</span></div>';
             }).join('');
-    } catch(e) { /* persist layer unavailable */ }
-}
-
-function initDesertMap(deserts) {
-    const mapEl = document.getElementById('desert-map');
-    if (!mapEl) return;
-    if (desertMap) desertMap.remove();
-    desertMap = L.map(mapEl).setView([20.5937, 78.9629], 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '\u00a9 OpenStreetMap' }).addTo(desertMap);
-    var confColors = { confirmed_gap: '#dc2626', possible_gap: '#f97316', data_limited: '#9ca3af' };
-    deserts.forEach(function(d) {
-        if (d.avg_lat && d.avg_lon) {
-            L.circleMarker([d.avg_lat, d.avg_lon], {
-                radius: 6, fillColor: confColors[d.confidence] || '#9ca3af',
-                color: '#fff', weight: 1, fillOpacity: 0.85
-            }).bindPopup(
-                '<b>' + (d.district || '') + '</b><br>' + (d.state || '') + '<br>' +
-                d.facility_count + ' facilities (' + d.severity + ')<br>' +
-                '<em class="text-xs">' + (d.confidence_note || '') + '</em>'
-            ).addTo(desertMap);
-        }
-    });
+    } catch(e) { /* silent */ }
 }
 
 // --- Referral Copilot ---
-let referralFiltersReady   = false;
-let refSelectedSpecialties = [];
-let refSelectedStates      = [];
-let _refLat = null;
-let _refLon = null;
+let refSelectedSpecs = [];
+let refSelectedStates = [];
+let refInitDone = false;
+let refLat = null, refLon = null;
 
-// Filter 1 (Specialty) → scopes Filter 2 (State) → Filter 2 scopes Filter 3 (City)
 async function refreshReferralStates() {
-    const cap  = refSelectedSpecialties.join(',');   // all selected caps, OR logic
-    const proc = (document.getElementById('ref-procedure') || {}).value || '';
-    const qp   = new URLSearchParams();
-    if (cap)  qp.set('capability', cap);
-    if (proc) qp.set('procedure',  proc.trim());
-    const url = '/api/filters/states' + (qp.toString() ? '?' + qp : '');
+    const spec = refSelectedSpecs.join(',');
+    const proc = document.getElementById('ref-procedure') ? document.getElementById('ref-procedure').value : '';
+    const params = new URLSearchParams();
+    if (spec) params.set('capability', spec);
+    if (proc) params.set('procedure', proc);
+    const url = '/api/filters/states' + (params.toString() ? '?' + params : '');
     let states = [];
     try {
-        const res  = await fetch(url);
+        const res = await fetch(url);
         const data = await res.json();
         states = data.states || [];
     } catch(e) { states = []; }
     refSelectedStates = [];
-    createMultiSelect('ref-state-ms', states, 'Select state(s) (' + states.length + ')...', async (selected) => {
+    createMultiSelect('ref-state-ms', states, 'Select state(s)...', async (selected) => {
         refSelectedStates = selected;
-        await loadCitiesForStates(selected, 'ref-city', cap, proc.trim());  // scoped by specialty+procedure
+        await loadCitiesForStates(selected, 'ref-city', spec, proc);
     });
-    const citySel = document.getElementById('ref-city');
-    if (citySel) citySel.innerHTML = '<option value="">All cities</option>';
-}
-
-async function resolveNearCity() {
-    const input  = document.getElementById('ref-near');
-    const status = document.getElementById('ref-near-status');
-    const city   = input ? input.value.trim() : '';
-    if (!city) { _refLat = null; _refLon = null; if (status) status.textContent = ''; return; }
-    if (status) status.textContent = '...';
-    try {
-        const res  = await fetch('/api/referral/locate?city=' + encodeURIComponent(city));
-        const data = await res.json();
-        if (data.found) {
-            _refLat = data.lat;
-            _refLon = data.lon;
-            if (status) { status.textContent = '✓'; status.className = 'absolute right-2 top-2.5 text-xs text-green-500'; }
-        } else {
-            _refLat = null; _refLon = null;
-            if (status) { status.textContent = '?'; status.className = 'absolute right-2 top-2.5 text-xs text-gray-400'; }
-        }
-    } catch(e) { _refLat = null; _refLon = null; }
 }
 
 async function initReferralFilters() {
-    if (referralFiltersReady) return;
-
-    // Specialty multiselect (curated capabilities)
-    let caps = [];
+    if (refInitDone) return;
+    const states = await loadStates();
+    // Build specialty multi-select from capabilities + common specialties
+    let specs = [];
     try {
-        const r = await fetch('/api/trust/capabilities');
-        const d = await r.json();
-        caps = (d.capabilities || []).map(c => ({ name: c, value: c, count: '' }));
+        const res = await fetch('/api/trust/capabilities');
+        const data = await res.json();
+        specs = (data.capabilities || []).map(c => ({ name: c, value: c, count: '' }));
     } catch(e) {
-        caps = ['ICU','Maternity','Emergency','Oncology','Trauma','NICU',
-                'Dialysis','Cardiology','Orthopedics','Neurology','Pediatrics',
-                'Ophthalmology','Radiology','Pathology','Physiotherapy'
-               ].map(c => ({ name: c, value: c, count: '' }));
+        specs = ['Cardiology','Neurology','Orthopedics','Oncology','Pediatrics','Ophthalmology',
+                 'Emergency','ICU','Maternity','Dialysis','Radiology'].map(c => ({ name: c, value: c, count: '' }));
     }
-    createMultiSelect('ref-specialty-ms', caps, 'Select specialty...', async (selected) => {
-        refSelectedSpecialties = selected;
-        await refreshReferralStates();   // specialty → rescopes state list
+    createMultiSelect('ref-specialty-ms', specs, 'Select specialty...', async (selected) => {
+        refSelectedSpecs = selected;
+        await refreshReferralStates();
     });
+    createMultiSelect('ref-state-ms', states, 'Select state(s)...', async (selected) => {
+        refSelectedStates = selected;
+        const spec = refSelectedSpecs.join(',');
+        const proc = document.getElementById('ref-procedure') ? document.getElementById('ref-procedure').value : '';
+        await loadCitiesForStates(selected, 'ref-city', spec, proc);
+    });
+    refInitDone = true;
+}
 
-    // Procedure datalist (top 80 known procedures + free text allowed)
-    try {
-        const r  = await fetch('/api/referral/procedures');
-        const d  = await r.json();
-        const dl = document.getElementById('procedure-list');
-        if (dl && d.procedures) {
-            dl.innerHTML = d.procedures
-                .map(p => '<option value="' + p.name.replace(/"/g, '&quot;') + '">' + p.count + ' facilities</option>')
-                .join('');
-        }
-    } catch(e) { /* datalist optional */ }
-
-    // Filter 2 + 3: initial unscoped state list (rescoped when specialty chosen)
-    await refreshReferralStates();
-
-    loadReferralShortlist();
-    referralFiltersReady = true;
+function resolveNearCity() {
+    // Simple geocode approximation — use facility coords for known cities
+    const input = document.getElementById('ref-near');
+    const status = document.getElementById('ref-near-status');
+    if (!input || !input.value.trim()) { refLat = null; refLon = null; if (status) status.textContent = ''; return; }
+    // For demo, set approximate coords for major Indian cities
+    const cities = {
+        'mumbai': [19.076, 72.877], 'delhi': [28.613, 77.209], 'bangalore': [12.972, 77.594],
+        'bengaluru': [12.972, 77.594], 'hyderabad': [17.385, 78.486], 'chennai': [13.083, 80.270],
+        'kolkata': [22.572, 88.364], 'pune': [18.520, 73.856], 'ahmedabad': [23.022, 72.571],
+        'jaipur': [26.912, 75.787], 'lucknow': [26.846, 80.946], 'patna': [25.594, 85.137],
+        'bhopal': [23.259, 77.412], 'thiruvananthapuram': [8.524, 76.936], 'chandigarh': [30.733, 76.779],
+    };
+    const key = input.value.trim().toLowerCase();
+    if (cities[key]) {
+        refLat = cities[key][0]; refLon = cities[key][1];
+        if (status) status.textContent = '✓';
+    } else {
+        refLat = null; refLon = null;
+        if (status) status.textContent = '?';
+    }
 }
 
 async function loadReferral() {
-    const specialty = refSelectedSpecialties.join(',');  // all selected, OR logic in backend
-    const procedure = document.getElementById('ref-procedure') ? document.getElementById('ref-procedure').value.trim() : '';
-    const city      = document.getElementById('ref-city')      ? document.getElementById('ref-city').value      : '';
-    if (!specialty && !procedure && !refSelectedStates.length) {
-        document.getElementById('referral-results').innerHTML =
-            '<p class="text-gray-400 py-8 text-center">Enter a specialty or procedure to search.</p>';
-        return;
-    }
-    const params = new URLSearchParams({ limit: '20' });
-    if (specialty)              params.set('specialty', specialty);
-    if (procedure)              params.set('procedure', procedure);
-    if (refSelectedStates.length) params.set('state', refSelectedStates.join(','));
-    if (city)                   params.set('city', city);
-    if (_refLat !== null)       params.set('lat', _refLat);
-    if (_refLon !== null)       params.set('lon', _refLon);
+    const specialty = refSelectedSpecs.join(',');
+    const procedure = document.getElementById('ref-procedure') ? document.getElementById('ref-procedure').value : '';
+    const states = refSelectedStates;
+    const city = document.getElementById('ref-city') ? document.getElementById('ref-city').value : '';
+    const params = new URLSearchParams();
+    if (specialty) params.set('specialty', specialty);
+    if (procedure) params.set('procedure', procedure);
+    if (states.length) params.set('state', states.join(','));
+    if (city) params.set('city', city);
+    if (refLat && refLon) { params.set('lat', refLat); params.set('lon', refLon); }
+    params.set('limit', '20');
 
     showLoading('referral-results');
     try {
-        const res  = await fetch('/api/referral/search?' + params);
+        const res = await fetch('/api/referral/search?' + params);
         const data = await res.json();
         const container = document.getElementById('referral-results');
-        if (data.error)  { container.innerHTML = '<p class="text-red-500 py-4">' + data.error + '</p>'; return; }
-        if (!data.facilities || !data.facilities.length) {
-            const specLabel = specialty ? specialty.split(',').join(' or ') : 'selected specialty';
-            const procNote  = procedure ? ' · procedure filter \"' + procedure + '\" may be too narrow' : '';
-            container.innerHTML = '<div class="text-center py-8"><p class="text-gray-600 mb-1">No facilities match <strong>' + specLabel + '</strong>' + (procedure ? ' + <strong>' + procedure + '</strong>' : '') + (city ? ' in <strong>' + city + '</strong>' : '') + '.</p><p class="text-xs text-gray-400">The district count reflects the specialty filter only. Procedure filters are applied on top — try removing the procedure to see all ' + specLabel + ' facilities.' + procNote + '</p></div>';
+        if (data.error) { container.innerHTML = '<p class="text-red-500 py-4">' + data.error + '</p>'; return; }
+        const facs = data.facilities || [];
+        if (!facs.length) {
+            container.innerHTML = '<p class="text-gray-500 py-8 text-center">No matching facilities found. Try broader filters.</p>';
             return;
         }
-        container.innerHTML = data.facilities.map(function(f, i) {
-            // Citations block
-            var cites = (f.citations || []).map(function(c) {
-                return '<div class="text-xs bg-gray-50 rounded p-2 mt-1 border-l-2 border-brand-red">' +
-                    '<span class="font-medium text-gray-500">[' + c.field + ']</span> ' +
-                    '<span class="text-gray-700">“' + c.text + '”</span></div>';
+        container.innerHTML = facs.map(function(f) {
+            var distTxt = f.distance_km ? '<span class="text-xs text-blue-600 font-medium">' + f.distance_km + ' km</span>' : '';
+            var reasons = (f.match_reasons || []).map(function(r) { return '<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">' + r + '</span>'; }).join(' ');
+            var citations = (f.citations || []).map(function(c) {
+                return '<div class="text-xs bg-gray-50 rounded p-2 mt-1 border-l-2 border-brand-red"><span class="font-medium text-gray-600">[' + c.field + ']</span> "' + c.text + '"</div>';
             }).join('');
-            var citesHtml = cites
-                ? '<details class="mt-2"><summary class="text-xs text-brand-red cursor-pointer font-medium">' +
-                  'Evidence citations (' + f.citations.length + ')</summary><div class="mt-1">' + cites + '</div></details>'
-                : '';
-
-            // Missing / suspicious evidence
-            var missingHtml = (f.missing_evidence || []).length
-                ? '<div class="flex flex-wrap gap-1 mt-2">' +
-                  (f.missing_evidence).map(function(m) {
-                      return '<span class="text-xs px-2 py-0.5 rounded bg-orange-50 text-orange-700 border border-orange-200">⚠ ' + m + '</span>';
-                  }).join('') + '</div>'
-                : '';
-
-            // Distance badge
-            var distBadge = f.distance_km !== null && f.distance_km !== undefined
-                ? '<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">📍 ' + f.distance_km + ' km</span>'
-                : '';
-
-            // Trust badge
-            var trustCls = f.trust_score >= 0.7 ? 'bg-green-100 text-green-700'
-                         : f.trust_score >= 0.4 ? 'bg-yellow-100 text-yellow-700'
-                         : 'bg-red-100 text-red-700';
-
+            var missing = (f.missing_evidence || []).map(function(m) {
+                return '<span class="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">' + m + '</span>';
+            }).join(' ');
             return '<div class="bg-white rounded-xl p-4 shadow-sm border hover:shadow-md transition">' +
                 '<div class="flex justify-between items-start">' +
                     '<div class="flex-1">' +
-                        '<div class="flex items-center gap-2 flex-wrap">' +
-                            '<span class="text-xs bg-brand-dark text-white px-2 py-0.5 rounded">#' + (i+1) + '</span>' +
+                        '<div class="flex items-center gap-2">' +
                             '<h4 class="font-semibold text-brand-dark">' + (f.name || f.unique_id) + '</h4>' +
-                            distBadge +
+                            distTxt +
                         '</div>' +
-                        '<p class="text-sm text-gray-500 mt-0.5">' +
-                            (f.city || '') + (f.city && f.state ? ', ' : '') + (f.state || '') +
-                            (f.organization_type ? ' · <em>' + f.organization_type + '</em>' : '') +
-                        '</p>' +
-                        (f.match_reasons && f.match_reasons.length
-                            ? '<div class="mt-1 text-xs text-green-700">' + f.match_reasons.join(' · ') + '</div>' : '') +
-                        citesHtml +
-                        missingHtml +
+                        '<p class="text-sm text-gray-500 mt-0.5">' + (f.city || '') + (f.city && f.state ? ', ' : '') + (f.state || '') +
+                            (f.organization_type ? ' <span class="text-xs text-gray-400">(' + f.organization_type + ')</span>' : '') + '</p>' +
+                        (reasons ? '<div class="mt-1.5 flex flex-wrap gap-1">' + reasons + '</div>' : '') +
+                        (citations ? '<details class="mt-2"><summary class="text-xs text-brand-red cursor-pointer font-medium">Citations (' + f.citations.length + ')</summary><div class="mt-1">' + citations + '</div></details>' : '') +
+                        (missing ? '<div class="mt-2 flex flex-wrap gap-1">' + missing + '</div>' : '') +
                     '</div>' +
-                    '<div class="text-right ml-4 shrink-0">' +
-                        '<div class="text-2xl font-bold text-brand-dark">' + (f.rank_score * 100).toFixed(0) + '</div>' +
-                        '<div class="text-xs text-gray-400 mb-1">rank</div>' +
-                        '<span class="text-xs px-2 py-0.5 rounded ' + trustCls + '">Trust ' + (f.trust_score * 100).toFixed(0) + '%</span>' +
-                        '<br><button onclick="addToShortlist(\'' + f.unique_id + '\',\'' + (f.name || '').replace(/\'/g, '') + '\')" ' +
-                            'class="mt-2 text-xs border border-brand-red text-brand-red rounded px-2 py-1 hover:bg-red-50">+ Shortlist</button>' +
+                    '<div class="text-right ml-4">' +
+                        '<div class="text-2xl font-bold ' + (f.rank_score >= 0.7 ? 'text-green-600' : f.rank_score >= 0.4 ? 'text-yellow-600' : 'text-red-600') + '">' +
+                            (f.rank_score * 100).toFixed(0) + '</div>' +
+                        '<div class="text-xs text-gray-400">rank score</div>' +
+                        '<button onclick="addToShortlist(\'' + f.unique_id + '\',\'' + (f.name || '').replace(/'/g, '') + '\')" class="mt-2 text-xs text-brand-red border border-brand-red rounded px-2 py-1 hover:bg-red-50">+ Shortlist</button>' +
                     '</div>' +
                 '</div>' +
             '</div>';
@@ -620,45 +581,11 @@ async function loadReferral() {
 
 async function addToShortlist(facilityId, name) {
     try {
-        const res  = await fetch('/api/referral/shortlist/' + encodeURIComponent(facilityId), { method: 'POST' });
+        const res = await fetch('/api/referral/shortlist/' + facilityId + '?label=' + encodeURIComponent(name), { method: 'POST' });
         const data = await res.json();
-        if (data.saved) {
-            const panel = document.getElementById('referral-shortlist-panel');
-            if (panel) panel.classList.remove('hidden');
-            loadReferralShortlist();
-        } else {
-            alert('Could not save: ' + (data.error || 'unknown error'));
-        }
-    } catch(e) { alert('Shortlist save failed.'); }
-}
-
-async function loadReferralShortlist() {
-    const panel = document.getElementById('referral-shortlist-panel');
-    const items = document.getElementById('referral-shortlist-items');
-    if (!items) return;
-    try {
-        const res  = await fetch('/api/referral/shortlist');
-        const data = await res.json();
-        const rows = data.shortlist || [];
-        if (!rows.length) { if (panel) panel.classList.add('hidden'); return; }
-        if (panel) panel.classList.remove('hidden');
-        items.innerHTML = rows.map(function(r) {
-            return '<div class="bg-white rounded-lg p-3 border flex justify-between items-center">' +
-                '<div>' +
-                    '<span class="font-medium text-sm text-brand-dark">' + (r.name || r.facility_id) + '</span>' +
-                    '<span class="text-xs text-gray-400 ml-2">' + (r.address_city || '') + (r.state_normalized ? ', ' + r.state_normalized : '') + '</span>' +
-                '</div>' +
-                '<button onclick="removeFromShortlist(\'' + r.facility_id + '\')" class="text-xs text-gray-400 hover:text-red-500 ml-3">✕</button>' +
-            '</div>';
-        }).join('');
-    } catch(e) { /* persist unavailable */ }
-}
-
-async function removeFromShortlist(facilityId) {
-    try {
-        await fetch('/api/referral/shortlist/' + encodeURIComponent(facilityId), { method: 'DELETE' });
-        loadReferralShortlist();
-    } catch(e) {}
+        if (data.saved) alert('Added to shortlist: ' + name);
+        else alert('Failed: ' + (data.error || ''));
+    } catch(e) { alert('Failed to save.'); }
 }
 
 function toggleShortlist() {
@@ -667,204 +594,154 @@ function toggleShortlist() {
 }
 
 // --- Data Readiness ---
-let _reviewDecisions = {};  // facility_id -> decision (cached from last load)
+let readinessLoaded = false;
 
 function showReadinessTab(tab) {
-    ['overview','review','states'].forEach(function(t) {
-        document.getElementById('readiness-tab-' + t).classList.toggle('hidden', t !== tab);
-        var btn = document.getElementById('tab-' + t);
+    ['overview', 'review', 'states'].forEach(function(t) {
+        const el = document.getElementById('readiness-tab-' + t);
+        const btn = document.getElementById('tab-' + t);
+        if (el) el.classList.toggle('hidden', t !== tab);
         if (btn) {
-            btn.className = t === tab
-                ? 'readiness-tab px-4 py-2 text-sm font-medium border-b-2 border-brand-red text-brand-red'
-                : 'readiness-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-brand-dark';
+            btn.classList.toggle('border-brand-red', t === tab);
+            btn.classList.toggle('text-brand-red', t === tab);
+            btn.classList.toggle('border-transparent', t !== tab);
+            btn.classList.toggle('text-gray-500', t !== tab);
         }
     });
-    if (tab === 'review')  loadReviewQueue('all');
-    if (tab === 'states')  loadStateBreakdown();
 }
 
 async function loadReadiness() {
+    if (readinessLoaded) return;
     showLoading('readiness-overview');
     try {
-        const res  = await fetch('/api/readiness/profile');
+        const res = await fetch('/api/readiness/profile');
         const data = await res.json();
-        const overview = document.getElementById('readiness-overview');
-        if (data.error) { overview.innerHTML = '<p class="text-red-500 py-4">' + data.error + '</p>'; return; }
-        const coverage = data.coverage || {};
-        const entries  = Object.entries(coverage).sort(function(a,b) { return b[1].pct - a[1].pct; });
-        overview.innerHTML =
-            '<div class="stat-card"><div class="value">' + (data.total_records || 0).toLocaleString() + '</div><div class="label">Facilities Profiled</div></div>' +
-            '<div class="stat-card"><div class="value">' + (data.fields_profiled || entries.length) + '</div><div class="label">Fields Analyzed</div></div>' +
-            '<div class="stat-card"><div class="value">' + (data.enrichment_priorities || []).length + '</div><div class="label">Fields Below 50%</div></div>' +
-            '<div class="stat-card cursor-pointer hover:shadow-md" onclick="showReadinessTab(&apos;review&apos;)">' +
-                '<div class="value text-orange-500">!</div><div class="label">Review Queue</div></div>';
-        const priorities = document.getElementById('readiness-priorities');
-        priorities.innerHTML = entries.map(function(entry) {
-            var field = entry[0], v = entry[1];
-            var barColor  = v.pct > 80 ? '#22c55e' : v.pct > 50 ? '#eab308' : '#dc2626';
-            var textClass = v.pct > 80 ? 'text-green-600' : v.pct > 50 ? 'text-yellow-600' : 'text-red-600';
-            return '<div class="bg-white rounded-lg p-3 border flex items-center justify-between hover:shadow-sm transition">' +
-                '<div class="min-w-[140px]"><span class="font-medium text-sm">' + field + '</span>' +
-                '<span class="text-xs text-gray-400 ml-2">' + (v.count || 0).toLocaleString() + ' / ' + (v.total || 0).toLocaleString() + '</span></div>' +
-                '<div class="flex items-center gap-3 flex-1 ml-4">' +
-                    '<div class="progress-bar flex-1"><div class="fill" style="width:' + v.pct + '%;background:' + barColor + '"></div></div>' +
-                    '<span class="text-sm font-semibold w-14 text-right ' + textClass + '">' + v.pct + '%</span>' +
-                '</div></div>';
+        const cov = data.coverage || {};
+        const total = data.total_records || 0;
+        const priorities = data.enrichment_priorities || [];
+
+        document.getElementById('readiness-overview').innerHTML =
+            '<div class="stat-card"><div class="value">' + total.toLocaleString() + '</div><div class="label">Total Records</div></div>' +
+            '<div class="stat-card"><div class="value">' + data.fields_profiled + '</div><div class="label">Fields Profiled</div></div>' +
+            '<div class="stat-card"><div class="value">' + priorities.length + '</div><div class="label">Fields < 50%</div></div>' +
+            '<div class="stat-card"><div class="value">' + (priorities.length > 0 ? priorities[0].pct.toFixed(0) + '%' : '—') + '</div><div class="label">Worst Field</div></div>';
+
+        // Field coverage bars
+        const fields = Object.keys(cov).sort(function(a, b) { return cov[b].pct - cov[a].pct; });
+        document.getElementById('readiness-priorities').innerHTML = fields.map(function(f) {
+            var pct = cov[f].pct;
+            var color = pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500';
+            return '<div class="flex items-center gap-3">' +
+                '<span class="text-xs font-mono w-40 text-gray-600">' + f + '</span>' +
+                '<div class="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden"><div class="h-full rounded-full ' + color + '" style="width:' + pct + '%"></div></div>' +
+                '<span class="text-xs text-gray-500 w-12 text-right">' + pct.toFixed(0) + '%</span>' +
+            '</div>';
         }).join('');
-        if ((data.enrichment_priorities || []).length) {
-            priorities.innerHTML += '<h4 class="font-semibold text-brand-dark mt-6 mb-2">Priority Fields for Enrichment (&lt; 50% coverage)</h4>' +
-                data.enrichment_priorities.map(function(e) {
-                    return '<div class="bg-red-50 rounded-lg p-3 border border-red-100 flex items-center justify-between">' +
-                        '<span class="font-medium text-sm text-red-800">' + e.field + '</span>' +
-                        '<span class="text-sm text-red-600 font-semibold">' + e.pct + '% — ' + (e.missing || 0).toLocaleString() + ' missing</span></div>';
-                }).join('');
-        }
-        // Pre-load review decisions cache
-        fetch('/api/readiness/reviews').then(r => r.json()).then(d => {
-            (d.reviews || []).forEach(function(r) { _reviewDecisions[r.facility_id] = r.decision; });
-            var badge = document.getElementById('review-badge');
-            if (badge) badge.textContent = (d.total || 0) + ' reviewed';
-        }).catch(function(){});
-    } catch(e) { console.error('Readiness load failed:', e); }
+    } catch(e) { console.error('Readiness profile failed:', e); }
+
+    // Load state summary
+    try {
+        const res = await fetch('/api/readiness/state-summary');
+        const data = await res.json();
+        const states = data.states || [];
+        document.getElementById('readiness-states').innerHTML =
+            '<table class="w-full text-xs"><thead class="bg-gray-50"><tr>' +
+            '<th class="px-2 py-1.5 text-left">State</th><th class="px-2 py-1.5">Facilities</th>' +
+            '<th class="px-2 py-1.5">Description</th><th class="px-2 py-1.5">Specialties</th>' +
+            '<th class="px-2 py-1.5">Coordinates</th><th class="px-2 py-1.5">Doctors</th>' +
+            '<th class="px-2 py-1.5">Equipment</th></tr></thead><tbody>' +
+            states.map(function(s) {
+                function pctCell(v) { var c = v >= 80 ? 'text-green-600' : v >= 50 ? 'text-yellow-600' : 'text-red-600'; return '<td class="px-2 py-1 text-center ' + c + '">' + (v || 0).toFixed(0) + '%</td>'; }
+                return '<tr class="border-t"><td class="px-2 py-1 font-medium">' + (s.state || '—') + '</td>' +
+                    '<td class="px-2 py-1 text-center">' + s.total + '</td>' +
+                    pctCell(s.desc_pct) + pctCell(s.spec_pct) + pctCell(s.coord_pct) +
+                    pctCell(s.doctors_pct) + pctCell(s.equip_pct) + '</tr>';
+            }).join('') +
+            '</tbody></table>';
+    } catch(e) { console.error('Readiness states failed:', e); }
+
+    // Load review queue
+    loadReviewQueue('all');
+    readinessLoaded = true;
 }
 
-let _currentReviewFilter = 'all';
-let _allFlagged = [];
+let _reviewData = [];
 
 async function loadReviewQueue(filter) {
-    _currentReviewFilter = filter || 'all';
-    // Update filter button styles
-    ['all','pending','approved','rejected'].forEach(function(f) {
-        var btn = document.getElementById('rfilt-' + f);
-        if (btn) btn.className = f === _currentReviewFilter
-            ? 'review-filter-btn text-xs px-3 py-1 rounded border border-brand-red bg-brand-red text-white'
-            : 'review-filter-btn text-xs px-3 py-1 rounded border text-gray-600 hover:bg-gray-50';
+    // Highlight active filter button
+    document.querySelectorAll('.review-filter-btn').forEach(function(btn) {
+        btn.classList.remove('bg-brand-red', 'text-white', 'border-brand-red');
+        btn.classList.add('text-gray-600');
     });
+    var activeBtn = document.getElementById('rfilt-' + filter);
+    if (activeBtn) { activeBtn.classList.add('bg-brand-red', 'text-white', 'border-brand-red'); activeBtn.classList.remove('text-gray-600'); }
 
-    var container = document.getElementById('readiness-flags');
-    if (!container) return;
-    if (!_allFlagged.length) {
-        container.innerHTML = '<div class="flex items-center py-6 gap-3"><div class="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-red"></div><span class="text-gray-500 text-sm">Loading flagged records...</span></div>';
+    showLoading('readiness-flags');
+    try {
+        const res = await fetch('/api/readiness/flags?limit=80');
+        const data = await res.json();
+        _reviewData = data.flags || [];
+        // Also fetch existing decisions to merge
+        let decisions = {};
         try {
-            var res  = await fetch('/api/readiness/flags?limit=80');
-            var data = await res.json();
-            _allFlagged = data.flagged || [];
-            var badge = document.getElementById('review-badge');
-            if (badge) badge.textContent = _allFlagged.length + ' flagged';
-        } catch(e) { container.innerHTML = '<p class="text-red-500">Failed to load flags.</p>'; return; }
-    }
+            const dRes = await fetch('/api/readiness/decisions');
+            const dData = await dRes.json();
+            (dData.decisions || []).forEach(function(d) { decisions[d.facility_id] = d; });
+        } catch(e) { /* no decisions yet */ }
 
-    var toShow = _allFlagged.filter(function(f) {
-        var dec = _reviewDecisions[f.unique_id] || 'pending';
-        if (_currentReviewFilter === 'all')      return true;
-        if (_currentReviewFilter === 'pending')  return dec === 'pending';
-        if (_currentReviewFilter === 'approved') return dec === 'approved';
-        if (_currentReviewFilter === 'rejected') return dec === 'rejected';
-        return true;
-    });
+        let flags = _reviewData.map(function(f) {
+            f._decision = decisions[f.unique_id] || null;
+            return f;
+        });
 
-    if (!toShow.length) {
-        container.innerHTML = '<p class="text-gray-400 py-8 text-center">No records in this category.</p>';
-        return;
-    }
+        // Apply filter
+        if (filter === 'pending')  flags = flags.filter(function(f) { return !f._decision; });
+        if (filter === 'approved') flags = flags.filter(function(f) { return f._decision && f._decision.decision === 'approved'; });
+        if (filter === 'rejected') flags = flags.filter(function(f) { return f._decision && f._decision.decision === 'rejected'; });
 
-    container.innerHTML = toShow.map(function(f) {
-        var dec    = _reviewDecisions[f.unique_id] || 'pending';
-        var decCls = dec === 'approved' ? 'bg-green-50 border-green-200' : dec === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-white';
-        var flagHtml = (f.flag_reasons || []).map(function(r) {
-            return '<span class="text-xs px-2 py-0.5 rounded bg-orange-50 text-orange-700 border border-orange-200 mr-1">⚠ ' + r + '</span>';
-        }).join('');
-        var safeId = (f.unique_id || '').replace(/'/g, '');
-        var safeName = (f.name || '').replace(/'/g, '').replace(/"/g, '');
-        var flagsJson = JSON.stringify(f.flag_reasons || []).replace(/'/g, "\'");
-        return '<div class="rounded-xl p-4 border shadow-sm ' + decCls + ' transition" id="flag-row-' + safeId + '">' +
-            '<div class="flex justify-between items-start">' +
-                '<div class="flex-1">' +
-                    '<div class="flex items-center gap-2 flex-wrap">' +
-                        '<h4 class="font-semibold text-brand-dark text-sm">' + (f.name || f.unique_id) + '</h4>' +
-                        '<span class="text-xs text-gray-400">' + (f.city || '') + (f.state ? ', ' + f.state : '') + '</span>' +
-                        (f.organization_type ? '<span class="text-xs text-gray-400 italic">' + f.organization_type + '</span>' : '') +
+        var badge = document.getElementById('review-badge');
+        if (badge) badge.textContent = flags.length + ' records';
+
+        document.getElementById('readiness-flags').innerHTML = flags.length === 0
+            ? '<p class="text-gray-400 text-sm py-4 text-center">No records in this category.</p>'
+            : flags.map(function(f) {
+                var reasons = (f.flag_reasons || []).map(function(r) {
+                    return '<span class="text-xs bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded">' + r + '</span>';
+                }).join(' ');
+                var dec = f._decision;
+                var decBadge = dec
+                    ? '<span class="text-xs px-2 py-0.5 rounded font-medium ' +
+                      (dec.decision === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700') + '">' +
+                      dec.decision + '</span>'
+                    : '';
+                return '<div class="bg-white rounded-lg border p-3">' +
+                    '<div class="flex justify-between items-start">' +
+                        '<div class="flex-1">' +
+                            '<span class="font-medium text-sm text-brand-dark">' + (f.name || f.unique_id) + '</span>' +
+                            '<span class="text-xs text-gray-400 ml-2">' + (f.state_normalized || '') + '</span> ' + decBadge +
+                            '<div class="mt-1 flex flex-wrap gap-1">' + reasons + '</div>' +
+                        '</div>' +
+                        '<div class="flex gap-1">' +
+                            '<button onclick="submitReview(\'' + f.unique_id + '\',\'approved\')" class="text-xs px-2 py-1 rounded border border-green-500 text-green-600 hover:bg-green-50">Approve</button>' +
+                            '<button onclick="submitReview(\'' + f.unique_id + '\',\'rejected\')" class="text-xs px-2 py-1 rounded border border-red-500 text-red-600 hover:bg-red-50">Reject</button>' +
+                        '</div>' +
                     '</div>' +
-                    '<div class="flex flex-wrap gap-1 mt-1">' + flagHtml + '</div>' +
-                    (f.description_snippet ? '<p class="text-xs text-gray-500 mt-1 italic">“' + f.description_snippet + '…”</p>' : '') +
-                    '<div class="mt-2 flex items-center gap-2">' +
-                        '<input type="text" placeholder="Add note..." id="note-' + safeId + '" class="border rounded px-2 py-1 text-xs flex-1" value="">' +
-                    '</div>' +
-                '</div>' +
-                '<div class="flex flex-col gap-1 ml-4 shrink-0">' +
-                    '<button onclick="saveReviewDecision(\'' + safeId + '\',\'approved\',\'' + flagsJson + '\')" ' +
-                        'class="text-xs px-3 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 font-medium">✓ Approve</button>' +
-                    '<button onclick="saveReviewDecision(\'' + safeId + '\',\'rejected\',\'' + flagsJson + '\')" ' +
-                        'class="text-xs px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 font-medium">✕ Reject</button>' +
-                    '<button onclick="saveReviewDecision(\'' + safeId + '\',\'needs_review\',\'' + flagsJson + '\')" ' +
-                        'class="text-xs px-3 py-1 rounded bg-yellow-100 text-yellow-700 hover:bg-yellow-200 font-medium">✎ Flag</button>' +
-                    (dec !== 'pending' ? '<span class="text-xs text-center text-gray-400 mt-1">' + dec + '</span>' : '') +
-                '</div>' +
-            '</div>' +
-        '</div>';
-    }).join('');
+                '</div>';
+            }).join('');
+    } catch(e) { console.error('Review queue failed:', e); }
 }
 
-async function saveReviewDecision(facilityId, decision, flagReasonsJson) {
-    var noteEl = document.getElementById('note-' + facilityId);
-    var note   = noteEl ? noteEl.value.trim() : '';
-    var flagReason = '';
-    try { flagReason = JSON.parse(flagReasonsJson.replace(/\'/g, "'")).join('; '); } catch(e) {}
+async function submitReview(facilityId, decision) {
     try {
-        var params = new URLSearchParams({ facility_id: facilityId, decision: decision, flag_reason: flagReason, note: note });
-        var res  = await fetch('/api/readiness/review?' + params, { method: 'POST' });
-        var data = await res.json();
-        if (data.saved) {
-            _reviewDecisions[facilityId] = decision;
-            // Update row styling without full reload
-            var row = document.getElementById('flag-row-' + facilityId);
-            if (row) {
-                row.className = row.className.replace(/bg-\S+ border-\S+/g, '').trim();
-                row.classList.add(decision === 'approved' ? 'bg-green-50' : decision === 'rejected' ? 'bg-red-50' : 'bg-yellow-50');
-                row.classList.add(decision === 'approved' ? 'border-green-200' : decision === 'rejected' ? 'border-red-200' : 'border-yellow-200');
-            }
-            // Refresh badge
-            var reviewed = Object.keys(_reviewDecisions).filter(function(k) { return _reviewDecisions[k] !== 'pending'; }).length;
-            var badge = document.getElementById('review-badge');
-            if (badge) badge.textContent = _allFlagged.length + ' flagged · ' + reviewed + ' reviewed';
-        }
-    } catch(e) { alert('Save failed.'); }
+        const params = new URLSearchParams({ decision: decision, note: '' });
+        const res = await fetch('/api/readiness/review/' + facilityId + '?' + params, { method: 'POST' });
+        const data = await res.json();
+        if (data.saved) loadReviewQueue('all');
+        else alert('Save failed: ' + (data.error || ''));
+    } catch(e) { alert('Review save failed.'); }
 }
 
-async function loadStateBreakdown() {
-    var container = document.getElementById('readiness-states');
-    if (!container) return;
-    container.innerHTML = '<div class="text-gray-400 text-sm py-4">Loading...</div>';
-    try {
-        var res  = await fetch('/api/readiness/state-summary');
-        var data = await res.json();
-        var rows = data.states || [];
-        if (!rows.length) { container.innerHTML = '<p class="text-gray-400">No data.</p>'; return; }
-        var cols = [
-            { key: 'state',       label: 'State' },
-            { key: 'total',       label: 'Facilities' },
-            { key: 'desc_pct',    label: 'Description %' },
-            { key: 'spec_pct',    label: 'Specialties %' },
-            { key: 'coord_pct',   label: 'Coordinates %' },
-            { key: 'doctors_pct', label: 'Doctors %' },
-            { key: 'equip_pct',   label: 'Equipment %' },
-        ];
-        var thead = '<tr>' + cols.map(function(c) {
-            return '<th class="px-3 py-2 text-left text-xs font-semibold text-gray-500 bg-gray-50 border-b whitespace-nowrap">' + c.label + '</th>';
-        }).join('') + '</tr>';
-        var tbody = rows.map(function(r) {
-            return '<tr class="hover:bg-gray-50">' + cols.map(function(c) {
-                var val = r[c.key];
-                if (c.key === 'total') return '<td class="px-3 py-2 text-sm font-medium">' + (val || 0).toLocaleString() + '</td>';
-                if (c.key === 'state') return '<td class="px-3 py-2 text-sm font-medium text-brand-dark">' + (val || '—') + '</td>';
-                var pct = parseFloat(val) || 0;
-                var cls = pct > 80 ? 'text-green-600' : pct > 50 ? 'text-yellow-600' : 'text-red-600';
-                return '<td class="px-3 py-2 text-sm font-semibold ' + cls + '">' + pct + '%</td>';
-            }).join('') + '</tr>';
-        }).join('');
-        container.innerHTML = '<table class="w-full border-collapse text-sm"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
-    } catch(e) { container.innerHTML = '<p class="text-red-400">Failed to load.</p>'; }
-}
-
-// --- Init ---
-document.addEventListener('DOMContentLoaded', function() { showPage('dashboard'); });
+// --- Page Init ---
+document.addEventListener('DOMContentLoaded', function() {
+    showPage('dashboard');
+});

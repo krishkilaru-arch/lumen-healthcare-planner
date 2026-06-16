@@ -48,8 +48,11 @@ def evaluate_capability_claim(row, capability):
     """Evaluate if a facility can actually do what it claims for a given capability.
     
     Returns trust_signal (strong/partial/weak/no_claim) and citations list.
+    Handles comma-separated capabilities — evaluates the FIRST one for signal.
     """
-    keywords = CAPABILITY_KEYWORDS.get(capability, [capability.lower()])
+    # Handle comma-separated: use first capability for signal evaluation
+    cap = capability.split(',')[0].strip() if ',' in capability else capability
+    keywords = CAPABILITY_KEYWORDS.get(cap, [cap.lower()])
     citations = []
     
     # Search across evidence fields
@@ -118,17 +121,23 @@ async def trust_scores(
     where_clauses = []
     params = []
     
-    # Capability filter: search in description, capability, procedure, specialties
+    # Capability filter: support comma-separated capabilities (OR logic)
     if capability:
-        keywords = CAPABILITY_KEYWORDS.get(capability, [capability.lower()])
+        caps = [c.strip() for c in capability.split(',') if c.strip()]
+        keywords = []
+        for cap in caps:
+            for kw in CAPABILITY_KEYWORDS.get(cap, [cap.lower()])[:3]:
+                if kw not in keywords:
+                    keywords.append(kw)
         kw_conditions = []
-        for kw in keywords[:3]:  # use top 3 keywords for SQL filter
+        for kw in keywords[:9]:  # up to 3 per capability, max 9 total
             kw_conditions.append(
                 "(LOWER(COALESCE(description,'')) || ' ' || LOWER(COALESCE(capability,'')) || ' ' || "
                 "LOWER(COALESCE(procedure,'')) || ' ' || LOWER(COALESCE(specialties,''))) ILIKE %s"
             )
             params.append(f'%{kw}%')
-        where_clauses.append('(' + ' OR '.join(kw_conditions) + ')')
+        if kw_conditions:
+            where_clauses.append('(' + ' OR '.join(kw_conditions) + ')')
     
     if state:
         state_list = [s.strip() for s in state.split(',') if s.strip()]
@@ -170,15 +179,16 @@ async def trust_scores(
             **score_data,
         })
     
-    # Merge any saved user overrides for this capability
-    if capability and results:
+    # Merge any saved user overrides — use first capability for override lookup
+    primary_cap = capability.split(',')[0].strip() if capability and ',' in capability else capability
+    if primary_cap and results:
         fids = [r['facility_id'] for r in results]
         ph   = ','.join(['%s'] * len(fids))
         try:
             saved = query(
                 f"SELECT facility_id, user_signal, note FROM {APP_SCHEMA}.trust_overrides "
                 f"WHERE capability = %s AND facility_id IN ({ph})",
-                tuple([capability] + fids)
+                tuple([primary_cap] + fids)
             )
             override_map = {o['facility_id']: o for o in saved}
         except Exception:
@@ -197,95 +207,3 @@ async def trust_scores(
     signal_order = {'strong': 0, 'partial': 1, 'weak': 2, 'no_claim': 3, None: 4}
     results.sort(key=lambda x: (signal_order.get(x.get('capability_signal'), 4), -x['overall_score']))
     return {'facilities': results[:limit], 'total': len(results), 'capability': capability}
-
-
-@router.get("/score/{facility_id}")
-async def trust_score_single(facility_id: str, capability: str = Query(None)):
-    """Get detailed trust score + citations for a single facility."""
-    rows = query(
-        f'SELECT * FROM {SYNCED_SCHEMA}.facilities_full WHERE unique_id = %s',
-        (facility_id,)
-    )
-    if not rows:
-        return {'error': 'Facility not found'}
-    row = rows[0]
-    score_data = compute_trust_score(row)
-    
-    # Evaluate all capabilities to show full picture
-    capability_assessments = {}
-    for cap in CAPABILITIES:
-        signal, citations = evaluate_capability_claim(row, cap)
-        if signal != 'no_claim':
-            capability_assessments[cap] = {
-                'computed_signal': signal,
-                'signal': signal,          # may be replaced by user override below
-                'citations': citations,
-                'user_override': None,
-            }
-
-    # Fetch and overlay any saved user overrides for this facility
-    try:
-        saved = query(
-            f"SELECT capability, user_signal, note, created_at "
-            f"FROM {APP_SCHEMA}.trust_overrides WHERE facility_id = %s",
-            (facility_id,)
-        )
-        for ov in saved:
-            cap = ov['capability']
-            entry = capability_assessments.get(cap)
-            if entry:
-                # Override the displayed signal; keep computed for reference
-                entry['signal']        = ov['user_signal']
-                entry['user_override'] = {'signal': ov['user_signal'], 'note': ov['note'], 'at': str(ov['created_at'])}
-            else:
-                # User overrode a capability that had no_claim — surface it
-                capability_assessments[cap] = {
-                    'computed_signal': 'no_claim',
-                    'signal': ov['user_signal'],
-                    'citations': [],
-                    'user_override': {'signal': ov['user_signal'], 'note': ov['note'], 'at': str(ov['created_at'])},
-                }
-    except Exception:
-        pass  # persist layer unavailable — show computed results only
-
-    return {
-        'facility_id': facility_id,
-        'name': row.get('name'),
-        'city': row.get('address_city'),
-        'state': row.get('state_normalized') or row.get('address_stateOrRegion'),
-        'specialties': safe_json_parse(row.get('specialties')),
-        'description': row.get('description', '')[:500],
-        'source_urls': row.get('source_urls'),
-        'capability_assessments': capability_assessments,
-        **score_data,
-    }
-
-
-@router.get("/distribution")
-async def trust_distribution():
-    """Get trust score distribution across all facilities (sample)."""
-    rows = query(f'SELECT * FROM {SYNCED_SCHEMA}.facilities_full ORDER BY RANDOM() LIMIT 500')
-    buckets = {'high': 0, 'medium': 0, 'low': 0}
-    for row in rows:
-        score = compute_trust_score(row)['overall_score']
-        if score >= 0.7:
-            buckets['high'] += 1
-        elif score >= 0.4:
-            buckets['medium'] += 1
-        else:
-            buckets['low'] += 1
-    return {'distribution': buckets, 'sample_size': len(rows)}
-
-
-@router.post("/override/{facility_id}")
-async def override_assessment(facility_id: str, capability: str = Query(...), signal: str = Query(...), note: str = Query('')):
-    """User overrides a capability assessment with a note (persisted)."""
-    execute(f"""
-        INSERT INTO {APP_SCHEMA}.trust_overrides (facility_id, capability, user_signal, note, created_at)
-        VALUES (%s, %s, %s, %s, NOW())
-        ON CONFLICT (facility_id, capability) DO UPDATE SET
-            user_signal = EXCLUDED.user_signal,
-            note = EXCLUDED.note,
-            created_at = NOW()
-    """, (facility_id, capability, signal, note))
-    return {'status': 'saved', 'facility_id': facility_id, 'capability': capability, 'signal': signal}

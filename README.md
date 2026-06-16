@@ -8,6 +8,96 @@
 
 ---
 
+## Inspiration
+
+India has 1.4 billion people but no single trustworthy source of truth about its healthcare infrastructure. We watched NGO coordinators spend weeks manually verifying facility claims, saw planners make resource allocation decisions based on data that hadn't been updated since before Telangana existed as a state, and met referral teams who couldn't answer "where should this patient go?" with any confidence.
+
+The Virtue Foundation dataset — 10,088 facilities — crystallized the problem: the data *exists*, but it's riddled with quality issues that make it dangerous to use naively. Clinics claim ICU capabilities with no equipment listed. Facilities in Telangana are still tagged "Andhra Pradesh." Doctor counts are missing for 64% of records. Someone needed to build a tool that doesn't hide these problems — it surfaces them, scores them, and lets planners make informed decisions anyway.
+
+We were inspired by the idea that **transparency about data limitations is more valuable than a polished dashboard that pretends the data is clean**.
+
+---
+
+## What It Does
+
+Lumen Healthcare Planner is a single unified app covering all 4 hackathon tracks, designed for non-technical healthcare planners, NGO coordinators, and policy analysts:
+
+1. **Facility Trust Desk** — Evaluates whether a facility can actually deliver the care it claims. Every assessment comes with a trust score, a signal (Strong/Partial/Weak/No Evidence), and exact citations from the source data. Users can override and annotate.
+
+2. **Medical Desert Planner** — Finds districts where critical care is scarce, cross-references with NFHS-5 health outcomes to distinguish real gaps from data gaps, and maps them with severity and confidence labels.
+
+3. **Referral Copilot** — Ranks facilities for a patient's medical need by relevance, trust, proximity, and capacity. Shows why each facility was recommended and what evidence is missing.
+
+4. **Data Readiness Desk** — Profiles the entire dataset's quality, flags suspicious records (future year established, coordinates outside India, clinics claiming trauma surgery), and provides a review queue where planners can approve, reject, or escalate.
+
+All decisions, notes, overrides, and scenarios persist to Lakebase across sessions.
+
+---
+
+## How We Built It
+
+**Backend**: FastAPI (Python) with 6 route modules — one per track plus persistence and a trust scoring engine. The scoring algorithm weighs completeness (40%), verification (35%), and recency (25%) to produce a 0–1 trust score for every facility.
+
+**Database**: Databricks Lakebase (Postgres-compatible) with OAuth token auto-refresh every 15 minutes via the Databricks SDK. Two schemas — `lakebase_pg_sync` for read-only synced data, `app_data` for user-generated persistence (notes, overrides, shortlists, scenarios, review decisions).
+
+**Data Engineering**: ETL pipeline that normalizes 255 raw state name variants to 35 canonical states, parses JSON-in-string fields at runtime, and fuzzy-matches district names across datasets (difflib, 0.85 cutoff, zero false positives verified).
+
+**Frontend**: Single-page app with Tailwind CSS, Leaflet.js for map visualization, and cascading filter dropdowns (capability → state → district → city) that re-count matching facilities at each level.
+
+**Specialty Normalization**: 2,768 raw camelCase specialty labels mapped to 55 canonical parent specialties via a keyword-matching engine with 224 rules.
+
+**Deployment**: Databricks Apps with `app.yaml` binding to the Lakebase instance.
+
+---
+
+## Challenges We Ran Into
+
+**State separation artifacts**: The 2014 Andhra Pradesh → Telangana split (and earlier Bihar → Jharkhand, UP → Uttarakhand, MP → Chhattisgarh splits) mean facilities are geographically misattributed. We could normalize state *names* but not re-assign facilities to their correct post-split state without district-level geocoding — which the data doesn't consistently support (coordinates are missing for many records). We chose to be transparent about this limitation rather than guess.
+
+**JSON arrays stored as strings**: The `capability`, `procedure`, `equipment`, and `specialties` fields are all JSON arrays encoded as TEXT. Some contain nested objects, some have trailing commas, some are the literal string "null". We built a defensive parser (`safe_json_parse`) that handles all variants without crashing.
+
+**Sparse critical fields**: Only 36% of facilities report doctor counts and 25% report bed capacity. This makes any scoring model inherently uncertain — we addressed this by making uncertainty a first-class concept in the UI rather than imputing values.
+
+**NFHS-5 district name mismatch**: The health indicators dataset uses different district spellings than the facility data. Exact joins miss ~30% of matches. Fuzzy matching at 0.85 cutoff recovered them with zero false positives (verified manually).
+
+**Lakebase token expiry**: OAuth tokens expire after 1 hour. Early in development we hit silent auth failures mid-session. We implemented a 15-minute proactive refresh cycle to stay well within the window.
+
+---
+
+## Accomplishments That We're Proud Of
+
+- **Radical transparency**: Every trust score explains itself. Every desert label shows its confidence. Every referral recommendation lists what evidence is missing. No black boxes.
+- **All 4 tracks in one cohesive app** — not 4 separate tools, but a unified workflow where Trust informs Referrals, Deserts drive planning scenarios, and Readiness flags feed back into Trust overrides.
+- **2,768 → 55 specialty normalization** — a keyword engine that correctly maps obscure camelCase identifiers like `gastroenterologyAndHepatobiliarySciences` to human-readable parent specialties.
+- **Zero false positives on fuzzy district matching** — verified across all 706 NFHS-5 districts against the facility data.
+- **Citation engine** — every capability claim is traced back to the exact text snippet in the source data, with field attribution. Planners see *why* the system thinks a facility has ICU capability.
+- **Data quality flag engine** — automatically detects 6 categories of suspicious records (future dates, out-of-India coordinates, capability/equipment mismatch, etc.) without manual rules.
+
+---
+
+## What We Learned
+
+- **Data quality problems are domain problems, not engineering problems.** You can't fix the AP → Telangana split with a regex — you need to understand Indian political geography and make judgment calls about what "correct" even means for a facility that was in AP when it registered but is physically in Telangana today.
+- **Uncertainty is a feature, not a bug.** Users trust a system more when it says "I'm not sure — here's why" than when it confidently shows a number it can't justify.
+- **Self-reported data should be treated as claims, not facts.** The moment we stopped calling `capability` a "feature" and started calling it a "claim," the entire UX design became clearer.
+- **Fuzzy matching needs guardrails.** A 0.80 cutoff gives you false positives on Indian district names (e.g., "Pune" matching "Puri"). 0.85 is the sweet spot — empirically verified.
+- **Lakebase + FastAPI is a very productive stack** for hackathons — Postgres familiarity with Databricks governance and zero infrastructure management.
+
+---
+
+## What's Next for Lumen Healthcare Planner
+
+- **District-level geocoding** — Use pincode centroids to re-assign facilities to their correct post-split state, resolving the AP/Telangana and Bihar/Jharkhand attribution problems
+- **Crowd-sourced verification** — Let field workers confirm or deny facility claims via mobile, building a ground-truth layer over time
+- **NFHS-6 integration** — When the next National Family Health Survey drops, auto-update the desert confidence labels
+- **Multi-language support** — Hindi, Telugu, Tamil, Marathi interfaces for grassroots health workers
+- **ML-based trust scoring** — Train on the overrides that planners have already submitted to improve the heuristic scoring model
+- **Real-time data feeds** — Connect to government health portals (NHA, ABDM) for live bed availability and doctor rosters
+- **Offline mode** — PWA with local caching for field workers in low-connectivity rural areas
+- **Policy simulation** — "What if we add 5 facilities to this desert district?" scenario modeling with projected impact on health outcomes
+
+---
+
 ## Why We Built This
 
 India's healthcare data is **fragmented, inconsistent, and riddled with quality issues**. Policymakers, NGO coordinators, and healthcare planners face a critical challenge: *they cannot trust the data they have, and they cannot see the gaps they're missing.*
